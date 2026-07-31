@@ -1,20 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import get_current_user
+from app.auth.jwt_handler import create_access_token
 from app.database.session import get_db
+from app.models.user import User
 from app.schemas.user import (
     UserCreate,
-    UserResponse,
     UserLogin,
+    UserResponse,
     Token,
 )
 from app.services.user_service import (
+    authenticate_user,
     create_user,
     get_user_by_email,
     get_user_by_username,
-    authenticate_user,
 )
-from app.auth.jwt_handler import create_access_token
 
 router = APIRouter(
     prefix="/auth",
@@ -66,3 +68,8 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
         "access_token": access_token,
         "token_type": "bearer",
     }
+
+
+@router.get("/me", response_model=UserResponse)
+def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
