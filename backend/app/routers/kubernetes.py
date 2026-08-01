@@ -204,3 +204,30 @@ def delete_deployment(deployment_name: str):
     return {
         "message": f"Deployment '{deployment_name}' deleted successfully"
     }        
+
+
+@router.get("/services")
+def list_services():
+    v1 = get_k8s_client()
+
+    services = v1.list_service_for_all_namespaces()
+
+    return {
+        "services": [
+            {
+                "name": service.metadata.name,
+                "namespace": service.metadata.namespace,
+                "type": service.spec.type,
+                "cluster_ip": service.spec.cluster_ip,
+                "ports": [
+                    {
+                        "port": port.port,
+                        "target_port": port.target_port,
+                        "protocol": port.protocol,
+                    }
+                    for port in service.spec.ports
+                ],
+            }
+            for service in services.items
+        ]
+    }    
