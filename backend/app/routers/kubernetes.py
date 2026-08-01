@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from kubernetes import client
 
+from app.schemas.service import ServiceCreate
+
 from app.schemas.scale import ScaleDeployment
 
 from app.kubernetes.client import get_k8s_client, get_apps_client
@@ -230,4 +232,213 @@ def list_services():
             }
             for service in services.items
         ]
+    }    
+
+@router.post("/services")
+def create_service(service: ServiceCreate):
+
+    v1 = get_k8s_client()
+
+    body = client.V1Service(
+        api_version="v1",
+        kind="Service",
+        metadata=client.V1ObjectMeta(
+            name=service.name
+        ),
+        spec=client.V1ServiceSpec(
+            selector={
+                "app": service.selector
+            },
+            ports=[
+                client.V1ServicePort(
+                    port=service.port,
+                    target_port=service.target_port,
+                )
+            ],
+            type=service.type,
+        ),
+    )
+
+    v1.create_namespaced_service(
+        namespace="default",
+        body=body,
+    )
+
+    return {
+        "message": f"Service '{service.name}' created successfully"
+    }   
+
+
+@router.delete("/services/{service_name}")
+def delete_service(service_name: str):
+
+    v1 = get_k8s_client()
+
+    v1.delete_namespaced_service(
+        name=service_name,
+        namespace="default",
+    )
+
+    return {
+        "message": f"Service '{service_name}' deleted successfully"
+    }     
+
+
+@router.get("/pods/{namespace}/{pod_name}/logs")
+def get_pod_logs(namespace: str, pod_name: str):
+
+    v1 = get_k8s_client()
+
+    logs = v1.read_namespaced_pod_log(
+        name=pod_name,
+        namespace=namespace,
+        tail_lines=100,
+    )
+
+    return {
+        "pod": pod_name,
+        "namespace": namespace,
+        "logs": logs,
+    }    
+
+@router.get("/events")
+def list_events():
+
+    v1 = get_k8s_client()
+
+    events = v1.list_event_for_all_namespaces()
+
+    return {
+        "events": [
+            {
+                "namespace": event.metadata.namespace,
+                "reason": event.reason,
+                "type": event.type,
+                "message": event.message,
+                "object": event.involved_object.name,
+                "time": event.last_timestamp or event.event_time,
+            }
+            for event in events.items
+        ]
+    }
+
+
+
+@router.get("/dashboard")
+def dashboard_summary():
+
+    v1 = get_k8s_client()
+    apps = get_apps_client()
+
+    namespaces = v1.list_namespace().items
+    pods = v1.list_pod_for_all_namespaces().items
+    services = v1.list_service_for_all_namespaces().items
+    deployments = apps.list_deployment_for_all_namespaces().items
+    nodes = v1.list_node().items
+
+    return {
+        "nodes": len(nodes),
+        "namespaces": len(namespaces),
+        "pods": len(pods),
+        "deployments": len(deployments),
+        "services": len(services),
+    }
+
+
+@router.get("/nodes")
+def list_nodes():
+
+    v1 = get_k8s_client()
+
+    nodes = v1.list_node()
+
+    return {
+        "nodes": [
+            {
+                "name": node.metadata.name,
+                "status": node.status.conditions[-1].type,
+                "kubelet_version": node.status.node_info.kubelet_version,
+                "os": node.status.node_info.os_image,
+                "architecture": node.status.node_info.architecture,
+            }
+            for node in nodes.items
+        ]
+    }    
+
+@router.get("/nodes/{node_name}")
+def get_node_details(node_name: str):
+
+    v1 = get_k8s_client()
+
+    node = v1.read_node(name=node_name)
+
+    return {
+        "name": node.metadata.name,
+        "os": node.status.node_info.os_image,
+        "architecture": node.status.node_info.architecture,
+        "kernel_version": node.status.node_info.kernel_version,
+        "kubelet_version": node.status.node_info.kubelet_version,
+        "container_runtime": node.status.node_info.container_runtime_version,
+        "addresses": [
+            {
+                "type": address.type,
+                "address": address.address,
+            }
+            for address in node.status.addresses
+        ],
+    }    
+
+
+@router.get("/cluster/health")
+def cluster_health():
+
+    v1 = get_k8s_client()
+    apps = get_apps_client()
+
+    nodes = v1.list_node().items
+    pods = v1.list_pod_for_all_namespaces().items
+    deployments = apps.list_deployment_for_all_namespaces().items
+    services = v1.list_service_for_all_namespaces().items
+
+    ready_nodes = sum(
+        1
+        for node in nodes
+        if any(
+            condition.type == "Ready" and condition.status == "True"
+            for condition in node.status.conditions
+        )
+    )
+
+    running_pods = sum(
+        1
+        for pod in pods
+        if pod.status.phase == "Running"
+    )
+
+    failed_pods = sum(
+        1
+        for pod in pods
+        if pod.status.phase == "Failed"
+    )
+
+    pending_pods = sum(
+        1
+        for pod in pods
+        if pod.status.phase == "Pending"
+    )
+
+    return {
+        "cluster_status": "Healthy" if ready_nodes == len(nodes) else "Warning",
+        "nodes": {
+            "total": len(nodes),
+            "ready": ready_nodes,
+        },
+        "pods": {
+            "total": len(pods),
+            "running": running_pods,
+            "pending": pending_pods,
+            "failed": failed_pods,
+        },
+        "deployments": len(deployments),
+        "services": len(services),
     }    
