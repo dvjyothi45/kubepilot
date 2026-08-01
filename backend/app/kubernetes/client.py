@@ -1,10 +1,11 @@
 from kubernetes import client, config
 
+config.load_kube_config()
+
 
 def get_k8s_client():
-    """
-    Load kubeconfig from the local machine
-    and return the Kubernetes CoreV1 API client.
-    """
-    config.load_kube_config()
     return client.CoreV1Api()
+
+
+def get_apps_client():
+    return client.AppsV1Api()
