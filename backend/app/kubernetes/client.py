@@ -9,3 +9,6 @@ def get_k8s_client():
 
 def get_apps_client():
     return client.AppsV1Api()
+
+
+    

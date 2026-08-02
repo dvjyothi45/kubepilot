@@ -1,6 +1,21 @@
 from fastapi import APIRouter, HTTPException
 from kubernetes import client
 
+from app.services.metrics_service import (
+    get_node_metrics,
+    get_pod_metrics,
+)
+
+from app.schemas.pvc import PVCCreate
+
+from app.schemas.configmap import ConfigMapCreate
+
+from app.schemas.secret import SecretCreate
+import base64
+
+from datetime import datetime
+from fastapi import HTTPException
+
 from app.schemas.service import ServiceCreate
 
 from app.schemas.scale import ScaleDeployment
@@ -441,4 +456,274 @@ def cluster_health():
         },
         "deployments": len(deployments),
         "services": len(services),
+    }    
+
+
+@router.get("/replicasets")
+def list_replicasets():
+    apps_v1 = get_apps_client()
+
+    replicasets = apps_v1.list_namespaced_replica_set(
+        namespace="default"
+    )
+
+    return {
+        "replicasets": [
+            {
+                "name": rs.metadata.name,
+                "replicas": rs.spec.replicas,
+                "ready": rs.status.ready_replicas or 0,
+            }
+            for rs in replicasets.items
+        ]
+    }    
+
+
+@router.get("/metrics/nodes")
+def node_metrics():
+
+    return {
+        "metrics": get_node_metrics()
+    }    
+
+
+@router.get("/metrics/pods")
+def pod_metrics():
+
+    return {
+        "metrics": get_pod_metrics()
+    }    
+
+
+@router.post("/deployments/{deployment_name}/restart")
+def restart_deployment(deployment_name: str):
+
+    apps_v1 = get_apps_client()
+
+    try:
+        deployment = apps_v1.read_namespaced_deployment(
+            name=deployment_name,
+            namespace="default",
+        )
+
+        # Create annotations dictionary if it doesn't exist
+        if deployment.spec.template.metadata.annotations is None:
+            deployment.spec.template.metadata.annotations = {}
+
+        deployment.spec.template.metadata.annotations[
+            "kubectl.kubernetes.io/restartedAt"
+        ] = datetime.utcnow().isoformat()
+
+        apps_v1.patch_namespaced_deployment(
+            name=deployment_name,
+            namespace="default",
+            body=deployment,
+        )
+
+        return {
+            "message": f"Deployment '{deployment_name}' restarted successfully"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))  
+
+
+@router.post("/configmaps")
+def create_configmap(configmap: ConfigMapCreate):
+
+    v1 = get_k8s_client()
+
+    body = client.V1ConfigMap(
+        metadata=client.V1ObjectMeta(
+            name=configmap.name
+        ),
+        data=configmap.data,
+    )
+
+    v1.create_namespaced_config_map(
+        namespace="default",
+        body=body,
+    )
+
+    return {
+        "message": f"ConfigMap '{configmap.name}' created successfully"
+    }        
+
+
+@router.get("/configmaps")
+def list_configmaps():
+
+    v1 = get_k8s_client()
+
+    configmaps = v1.list_namespaced_config_map(
+        namespace="default"
+    )
+
+    return {
+        "configmaps": [
+            {
+                "name": cm.metadata.name,
+                "data": cm.data,
+            }
+            for cm in configmaps.items
+        ]
+    }    
+
+@router.post("/secrets")
+def create_secret(secret: SecretCreate):
+
+    v1 = get_k8s_client()
+
+    encoded_data = {
+        key: base64.b64encode(value.encode()).decode()
+        for key, value in secret.data.items()
+    }
+
+    body = client.V1Secret(
+        api_version="v1",
+        kind="Secret",
+        metadata=client.V1ObjectMeta(
+            name=secret.name
+        ),
+        data=encoded_data,
+        type="Opaque",
+    )
+
+    v1.create_namespaced_secret(
+        namespace="default",
+        body=body,
+    )
+
+    return {
+        "message": f"Secret '{secret.name}' created successfully"
+    }    
+
+@router.get("/secrets")
+def list_secrets():
+
+    v1 = get_k8s_client()
+
+    secrets = v1.list_namespaced_secret(
+        namespace="default"
+    )
+
+    return {
+        "secrets": [
+            {
+                "name": secret.metadata.name,
+                "type": secret.type,
+            }
+            for secret in secrets.items
+        ]
+    }    
+
+
+@router.post("/persistentvolumeclaims")
+def create_pvc(pvc: PVCCreate):
+
+    v1 = get_k8s_client()
+
+    body = client.V1PersistentVolumeClaim(
+        metadata=client.V1ObjectMeta(
+            name=pvc.name
+        ),
+        spec=client.V1PersistentVolumeClaimSpec(
+            access_modes=[pvc.access_mode],
+            resources=client.V1VolumeResourceRequirements(
+                requests={
+                    "storage": pvc.storage
+                }
+            ),
+        ),
+    )
+
+    v1.create_namespaced_persistent_volume_claim(
+        namespace="default",
+        body=body,
+    )
+
+    return {
+        "message": f"PVC '{pvc.name}' created successfully"
+    }    
+
+
+@router.get("/persistentvolumeclaims")
+def list_pvcs():
+
+    v1 = get_k8s_client()
+
+    pvcs = v1.list_namespaced_persistent_volume_claim(
+        namespace="default"
+    )
+
+    return {
+        "persistent_volume_claims": [
+            {
+                "name": pvc.metadata.name,
+                "status": pvc.status.phase,
+                "storage": pvc.spec.resources.requests["storage"],
+                "access_modes": pvc.spec.access_modes,
+            }
+            for pvc in pvcs.items
+        ]
+    }
+
+
+@router.delete("/persistentvolumeclaims/{pvc_name}")
+def delete_pvc(pvc_name: str):
+
+    v1 = get_k8s_client()
+
+    v1.delete_namespaced_persistent_volume_claim(
+        name=pvc_name,
+        namespace="default",
+    )
+
+    return {
+        "message": f"PVC '{pvc_name}' deleted successfully"
+    }        
+
+@router.get("/persistentvolumes")
+def list_persistent_volumes():
+
+    v1 = get_k8s_client()
+
+    pvs = v1.list_persistent_volume()
+
+    return {
+        "persistent_volumes": [
+            {
+                "name": pv.metadata.name,
+                "capacity": pv.spec.capacity["storage"],
+                "access_modes": pv.spec.access_modes,
+                "status": pv.status.phase,
+                "storage_class": pv.spec.storage_class_name,
+                "claim": (
+                    f"{pv.spec.claim_ref.namespace}/{pv.spec.claim_ref.name}"
+                    if pv.spec.claim_ref
+                    else None
+                ),
+            }
+            for pv in pvs.items
+        ]
+    }    
+
+
+@router.get("/deployments/{deployment_name}/status")
+def deployment_status(deployment_name: str):
+
+    apps_v1 = get_apps_client()
+
+    deployment = apps_v1.read_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+    )
+
+    return {
+        "name": deployment.metadata.name,
+        "replicas": deployment.spec.replicas,
+        "ready_replicas": deployment.status.ready_replicas or 0,
+        "available_replicas": deployment.status.available_replicas or 0,
+        "updated_replicas": deployment.status.updated_replicas or 0,
+        "unavailable_replicas": deployment.status.unavailable_replicas or 0,
     }    
