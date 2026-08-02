@@ -1,6 +1,17 @@
 from fastapi import APIRouter, HTTPException
 from kubernetes import client
 
+from app.schemas.namespace import NamespaceCreate
+from app.schemas.labels import LabelsUpdate
+
+from app.services.rollback_service import rollback_deployment
+
+from app.schemas.annotations import AnnotationsUpdate
+
+import yaml
+from app.schemas.yaml import YAMLManifest
+from kubernetes.utils import create_from_dict
+
 from app.services.metrics_service import (
     get_node_metrics,
     get_pod_metrics,
@@ -726,4 +737,258 @@ def deployment_status(deployment_name: str):
         "available_replicas": deployment.status.available_replicas or 0,
         "updated_replicas": deployment.status.updated_replicas or 0,
         "unavailable_replicas": deployment.status.unavailable_replicas or 0,
+    }    
+
+@router.get("/deployments/{deployment_name}/history")
+def deployment_history(deployment_name: str):
+
+    apps_v1 = get_apps_client()
+
+    replicasets = apps_v1.list_namespaced_replica_set(
+        namespace="default"
+    )
+
+    history = []
+
+    for rs in replicasets.items:
+        owner_refs = rs.metadata.owner_references or []
+
+        for owner in owner_refs:
+            if owner.kind == "Deployment" and owner.name == deployment_name:
+                history.append({
+                    "replicaset": rs.metadata.name,
+                    "replicas": rs.spec.replicas,
+                    "ready_replicas": rs.status.ready_replicas or 0,
+                    "created_at": rs.metadata.creation_timestamp,
+                })
+
+    return {
+        "deployment": deployment_name,
+        "history": history
+    }   
+
+@router.get("/deployments/{deployment_name}/yaml")
+def export_deployment_yaml(deployment_name: str):
+
+    apps_v1 = get_apps_client()
+
+    deployment = apps_v1.read_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+    )
+
+    deployment_dict = deployment.to_dict()
+
+    yaml_output = yaml.dump(
+        deployment_dict,
+        sort_keys=False,
+    )
+
+    return {
+        "deployment": deployment_name,
+        "yaml": yaml_output,
+    }
+
+
+@router.post("/apply")
+def apply_yaml(manifest: YAMLManifest):
+
+    k8s_client = get_k8s_client()
+
+    documents = list(yaml.safe_load_all(manifest.yaml))
+
+    created = []
+
+    for doc in documents:
+
+        if doc:
+            create_from_dict(
+                client.ApiClient(),
+                data=doc,
+            )
+
+            created.append(
+                {
+                    "kind": doc.get("kind"),
+                    "name": doc.get("metadata", {}).get("name"),
+                }
+            )
+
+    return {
+        "message": "Manifest applied successfully",
+        "resources": created,
+    }    
+
+
+@router.post("/namespaces")
+def create_namespace(namespace: NamespaceCreate):
+
+    v1 = get_k8s_client()
+
+    body = client.V1Namespace(
+        metadata=client.V1ObjectMeta(
+            name=namespace.name
+        )
+    )
+
+    v1.create_namespace(body=body)
+
+    return {
+        "message": f"Namespace '{namespace.name}' created successfully"
+    }
+
+
+@router.delete("/namespaces/{namespace_name}")
+def delete_namespace(namespace_name: str):
+
+    v1 = get_k8s_client()
+
+    v1.delete_namespace(name=namespace_name)
+
+    return {
+        "message": f"Namespace '{namespace_name}' deleted successfully"
+    }        
+
+
+@router.get("/deployments/{deployment_name}/labels")
+def get_deployment_labels(deployment_name: str):
+
+    apps_v1 = get_apps_client()
+
+    deployment = apps_v1.read_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+    )
+
+    return {
+        "deployment": deployment_name,
+        "labels": deployment.metadata.labels or {}
+    }    
+
+@router.put("/deployments/{deployment_name}/labels")
+def update_deployment_labels(
+    deployment_name: str,
+    labels: LabelsUpdate,
+):
+
+    apps_v1 = get_apps_client()
+
+    deployment = apps_v1.read_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+    )
+
+    if deployment.metadata.labels is None:
+        deployment.metadata.labels = {}
+
+    deployment.metadata.labels.update(labels.labels)
+
+    apps_v1.patch_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+        body=deployment,
+    )
+
+    return {
+        "message": f"Labels updated for deployment '{deployment_name}'",
+        "labels": deployment.metadata.labels,
+    }
+
+@router.get("/deployments/{deployment_name}/annotations")
+def get_deployment_annotations(deployment_name: str):
+
+    apps_v1 = get_apps_client()
+
+    deployment = apps_v1.read_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+    )
+
+    return {
+        "deployment": deployment_name,
+        "annotations": deployment.metadata.annotations or {}
+    }
+
+
+@router.put("/deployments/{deployment_name}/annotations")
+def update_deployment_annotations(
+    deployment_name: str,
+    annotations: AnnotationsUpdate,
+):
+
+    apps_v1 = get_apps_client()
+
+    deployment = apps_v1.read_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+    )
+
+    if deployment.metadata.annotations is None:
+        deployment.metadata.annotations = {}
+
+    deployment.metadata.annotations.update(
+        annotations.annotations
+    )
+
+    apps_v1.patch_namespaced_deployment(
+        name=deployment_name,
+        namespace="default",
+        body=deployment,
+    )
+
+    return {
+        "message": f"Annotations updated for deployment '{deployment_name}'",
+        "annotations": deployment.metadata.annotations,
+    } 
+
+
+@router.post("/deployments/{deployment_name}/rollback")
+def rollback(deployment_name: str):
+    return rollback_deployment(deployment_name)
+
+@router.get("/search")
+def search_resources(q: str):
+
+    v1 = get_k8s_client()
+    apps = get_apps_client()
+
+    pods = v1.list_pod_for_all_namespaces().items
+    services = v1.list_service_for_all_namespaces().items
+    deployments = apps.list_deployment_for_all_namespaces().items
+
+    matching_pods = [
+        {
+            "name": pod.metadata.name,
+            "namespace": pod.metadata.namespace,
+            "status": pod.status.phase,
+        }
+        for pod in pods
+        if q.lower() in pod.metadata.name.lower()
+    ]
+
+    matching_services = [
+        {
+            "name": service.metadata.name,
+            "namespace": service.metadata.namespace,
+            "type": service.spec.type,
+        }
+        for service in services
+        if q.lower() in service.metadata.name.lower()
+    ]
+
+    matching_deployments = [
+        {
+            "name": deployment.metadata.name,
+            "namespace": deployment.metadata.namespace,
+            "replicas": deployment.spec.replicas,
+        }
+        for deployment in deployments
+        if q.lower() in deployment.metadata.name.lower()
+    ]
+
+    return {
+        "query": q,
+        "pods": matching_pods,
+        "services": matching_services,
+        "deployments": matching_deployments,
     }    
