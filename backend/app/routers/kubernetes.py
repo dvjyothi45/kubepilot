@@ -289,17 +289,19 @@ def create_service(service: ServiceCreate):
 
 
 @router.delete("/services/{service_name}")
-def delete_service(service_name: str):
-
+def delete_service(
+    service_name: str,
+    namespace: str = "default",
+):
     v1 = get_k8s_client()
 
     v1.delete_namespaced_service(
         name=service_name,
-        namespace="default",
+        namespace=namespace,
     )
 
     return {
-        "message": f"Service '{service_name}' deleted successfully"
+        "message": f"Service '{service_name}' deleted successfully from namespace '{namespace}'"
     }     
 
 
@@ -576,6 +578,24 @@ def list_configmaps():
         ]
     }    
 
+@router.delete("/configmaps/{configmap_name}")
+def delete_configmap(
+    configmap_name: str,
+    namespace: str = "default",
+):
+    v1 = get_k8s_client()
+
+    v1.delete_namespaced_config_map(
+        name=configmap_name,
+        namespace=namespace,
+    )
+
+    return {
+        "message": f"ConfigMap '{configmap_name}' deleted successfully from namespace '{namespace}'"
+    }
+
+
+
 @router.post("/secrets")
 def create_secret(secret: SecretCreate):
 
@@ -623,6 +643,23 @@ def list_secrets():
             for secret in secrets.items
         ]
     }    
+
+@router.delete("/secrets/{secret_name}")
+def delete_secret(
+    secret_name: str,
+    namespace: str = "default",
+):
+    v1 = get_k8s_client()
+
+    v1.delete_namespaced_secret(
+        name=secret_name,
+        namespace=namespace,
+    )
+
+    return {
+        "message": f"Secret '{secret_name}' deleted successfully from namespace '{namespace}'"
+    }
+
 
 
 @router.post("/persistentvolumeclaims")
