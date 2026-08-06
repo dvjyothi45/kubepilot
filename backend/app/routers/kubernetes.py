@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from kubernetes import client
 
+
 from app.schemas.namespace import NamespaceCreate
 from app.schemas.labels import LabelsUpdate
 
@@ -9,6 +10,9 @@ from typing import Optional
 from app.services.rollback_service import rollback_deployment
 
 from app.schemas.annotations import AnnotationsUpdate
+
+from app.schemas.configmap_update import ConfigMapUpdate
+from app.schemas.secret_update import SecretUpdate
 
 import yaml
 from app.schemas.yaml import YAMLManifest
@@ -214,17 +218,24 @@ def scale_deployment(
 def delete_deployment(
     deployment_name: str,
     namespace: str = "default",
+    confirm: bool = False,
 ):
     apps_v1 = get_apps_client()
 
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Set confirm=true to delete the deployment."
+        )
+
     apps_v1.delete_namespaced_deployment(
-    name=deployment_name,
-    namespace=namespace,
-)
+        name=deployment_name,
+        namespace=namespace,
+    )
 
     return {
-    "message": f"Deployment '{deployment_name}' deleted successfully from namespace '{namespace}'"
-}        
+        "message": f"Deployment '{deployment_name}' deleted successfully from namespace '{namespace}'"
+    }       
 
 
 @router.get("/services")
@@ -578,6 +589,34 @@ def list_configmaps():
         ]
     }    
 
+@router.put("/configmaps/{configmap_name}")
+def update_configmap(
+    configmap_name: str,
+    configmap: ConfigMapUpdate,
+    namespace: str = "default",
+):
+    v1 = get_k8s_client()
+
+    existing = v1.read_namespaced_config_map(
+        name=configmap_name,
+        namespace=namespace,
+    )
+
+    existing.data = configmap.data
+
+    v1.patch_namespaced_config_map(
+        name=configmap_name,
+        namespace=namespace,
+        body=existing,
+    )
+
+    return {
+        "message": (
+            f"ConfigMap '{configmap_name}' updated successfully in namespace '{namespace}'"
+        ),
+        "data": existing.data,
+    }
+
 @router.delete("/configmaps/{configmap_name}")
 def delete_configmap(
     configmap_name: str,
@@ -643,6 +682,36 @@ def list_secrets():
             for secret in secrets.items
         ]
     }    
+
+@router.put("/secrets/{secret_name}")
+def update_secret(
+    secret_name: str,
+    secret: SecretUpdate,
+    namespace: str = "default",
+):
+    v1 = get_k8s_client()
+
+    existing = v1.read_namespaced_secret(
+        name=secret_name,
+        namespace=namespace,
+    )
+
+    encoded_data = {
+        key: base64.b64encode(value.encode()).decode()
+        for key, value in secret.data.items()
+    }
+
+    existing.data = encoded_data
+
+    v1.patch_namespaced_secret(
+        name=secret_name,
+        namespace=namespace,
+        body=existing,
+    )
+
+    return {
+        "message": f"Secret '{secret_name}' updated successfully in namespace '{namespace}'"
+    }
 
 @router.delete("/secrets/{secret_name}")
 def delete_secret(
@@ -872,16 +941,27 @@ def create_namespace(namespace: NamespaceCreate):
 
 
 @router.delete("/namespaces/{namespace_name}")
-def delete_namespace(namespace_name: str):
-
+def delete_namespace(
+    namespace_name: str,
+    confirm: bool = False,
+):
     v1 = get_k8s_client()
+
+    if not confirm:
+        return {
+            "message": (
+                f"Please confirm deletion of namespace '{namespace_name}' "
+                "by setting confirm=true."
+            )
+        }
 
     v1.delete_namespace(name=namespace_name)
 
     return {
-        "message": f"Namespace '{namespace_name}' deleted successfully"
-    }        
-
+        "message": (
+            f"Namespace '{namespace_name}' deleted successfully."
+        )
+    }
 
 @router.get("/deployments/{deployment_name}/labels")
 def get_deployment_labels(deployment_name: str):
