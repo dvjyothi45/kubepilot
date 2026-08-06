@@ -10,6 +10,7 @@ from typing import Optional
 from app.services.rollback_service import rollback_deployment
 
 from app.schemas.annotations import AnnotationsUpdate
+from app.schemas.service_update import ServiceUpdate
 
 from app.schemas.configmap_update import ConfigMapUpdate
 from app.schemas.secret_update import SecretUpdate
@@ -281,9 +282,10 @@ def create_service(service: ServiceCreate):
             },
             ports=[
                 client.V1ServicePort(
-                    port=service.port,
-                    target_port=service.target_port,
-                )
+    name="http",
+    port=service.port,
+    target_port=service.target_port,
+)
             ],
             type=service.type,
         ),
@@ -298,6 +300,46 @@ def create_service(service: ServiceCreate):
         "message": f"Service '{service.name}' created successfully"
     }   
 
+@router.put("/services/{service_name}")
+def update_service(
+    service_name: str,
+    service: ServiceUpdate,
+    namespace: str = "default",
+):
+    v1 = get_k8s_client()
+
+    try:
+        existing = v1.read_namespaced_service(
+            name=service_name,
+            namespace=namespace,
+        )
+
+        existing.spec.ports = [
+            client.V1ServicePort(
+                name="http",
+                port=service.port,
+                target_port=service.target_port,
+                protocol="TCP",
+            )
+        ]
+
+        existing.spec.type = service.type
+
+        # Preserve the selector
+        existing.spec.selector = existing.spec.selector
+
+        v1.replace_namespaced_service(
+            name=service_name,
+            namespace=namespace,
+            body=existing,
+        )
+
+        return {
+            "message": f"Service '{service_name}' updated successfully"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/services/{service_name}")
 def delete_service(
@@ -306,15 +348,18 @@ def delete_service(
 ):
     v1 = get_k8s_client()
 
-    v1.delete_namespaced_service(
-        name=service_name,
-        namespace=namespace,
-    )
+    try:
+        v1.delete_namespaced_service(
+            name=service_name,
+            namespace=namespace,
+        )
 
-    return {
-        "message": f"Service '{service_name}' deleted successfully from namespace '{namespace}'"
-    }     
+        return {
+            "message": f"Service '{service_name}' deleted successfully from namespace '{namespace}'"
+        }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/pods/{namespace}/{pod_name}/logs")
 def get_pod_logs(namespace: str, pod_name: str):
