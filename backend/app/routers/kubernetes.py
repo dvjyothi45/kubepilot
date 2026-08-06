@@ -4,6 +4,8 @@ from kubernetes import client
 from app.schemas.namespace import NamespaceCreate
 from app.schemas.labels import LabelsUpdate
 
+from typing import Optional
+
 from app.services.rollback_service import rollback_deployment
 
 from app.schemas.annotations import AnnotationsUpdate
@@ -53,25 +55,6 @@ def list_namespaces():
         ]
     }
 
-
-@router.get("/pods")
-def list_pods():
-    v1 = get_k8s_client()
-
-    pods = v1.list_pod_for_all_namespaces(watch=False)
-
-    return {
-        "pods": [
-            {
-                "name": pod.metadata.name,
-                "namespace": pod.metadata.namespace,
-                "status": pod.status.phase,
-                "node": pod.spec.node_name,
-                "pod_ip": pod.status.pod_ip,
-            }
-            for pod in pods.items
-        ]
-    }
 
 
 @router.get("/pods/{namespace}")
@@ -126,7 +109,10 @@ def get_pod_details(namespace: str, pod_name: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 @router.post("/deployments")
-def create_deployment(deployment: DeploymentCreate):
+def create_deployment(
+    deployment: DeploymentCreate,
+    namespace: str = "default",
+):
 
     apps_v1 = client.AppsV1Api()
 
@@ -167,20 +153,22 @@ def create_deployment(deployment: DeploymentCreate):
     )
 
     client.AppsV1Api().create_namespaced_deployment(
-        namespace="default",
-        body=body,
-    )
+    namespace=namespace,
+    body=body,
+)
 
     return {
-        "message": f"Deployment '{deployment.name}' created successfully"
-    }        
+    "message": f"Deployment '{deployment.name}' created successfully in namespace '{namespace}'"
+}       
 
 
 @router.get("/deployments")
-def list_deployments():
+def list_deployments(namespace: str = "default"):
     apps_v1 = get_apps_client()
 
-    deployments = apps_v1.list_namespaced_deployment(namespace="default")
+    deployments = apps_v1.list_namespaced_deployment(
+        namespace=namespace
+    )
 
     return {
         "deployments": [
@@ -193,7 +181,9 @@ def list_deployments():
             }
             for dep in deployments.items
         ]
-    }    
+    }
+
+       
 
 
 @router.put("/deployments/{deployment_name}/scale")
@@ -221,17 +211,20 @@ def scale_deployment(
     }
 
 @router.delete("/deployments/{deployment_name}")
-def delete_deployment(deployment_name: str):
+def delete_deployment(
+    deployment_name: str,
+    namespace: str = "default",
+):
     apps_v1 = get_apps_client()
 
     apps_v1.delete_namespaced_deployment(
-        name=deployment_name,
-        namespace="default",
-    )
+    name=deployment_name,
+    namespace=namespace,
+)
 
     return {
-        "message": f"Deployment '{deployment_name}' deleted successfully"
-    }        
+    "message": f"Deployment '{deployment_name}' deleted successfully from namespace '{namespace}'"
+}        
 
 
 @router.get("/services")
@@ -507,15 +500,18 @@ def pod_metrics():
 
 
 @router.post("/deployments/{deployment_name}/restart")
-def restart_deployment(deployment_name: str):
+def restart_deployment(
+    deployment_name: str,
+    namespace: str = "default",
+):
 
     apps_v1 = get_apps_client()
 
     try:
         deployment = apps_v1.read_namespaced_deployment(
-            name=deployment_name,
-            namespace="default",
-        )
+        name=deployment_name,
+        namespace=namespace,
+     )
 
         # Create annotations dictionary if it doesn't exist
         if deployment.spec.template.metadata.annotations is None:
@@ -526,14 +522,14 @@ def restart_deployment(deployment_name: str):
         ] = datetime.utcnow().isoformat()
 
         apps_v1.patch_namespaced_deployment(
-            name=deployment_name,
-            namespace="default",
-            body=deployment,
-        )
+    name=deployment_name,
+    namespace=namespace,
+    body=deployment,
+)
 
         return {
-            "message": f"Deployment '{deployment_name}' restarted successfully"
-        }
+    "message": f"Deployment '{deployment_name}' restarted successfully in namespace '{namespace}'"
+}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))  
@@ -992,3 +988,60 @@ def search_resources(q: str):
         "services": matching_services,
         "deployments": matching_deployments,
     }    
+
+
+@router.get("/pods")
+def list_pods(
+    namespace: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    limit: int = 10,
+    sort_by: Optional[str] = None,
+):
+    v1 = get_k8s_client()
+
+    # Get pods
+    if namespace:
+        pods = v1.list_namespaced_pod(namespace=namespace)
+    else:
+        pods = v1.list_pod_for_all_namespaces()
+
+    pod_list = []
+
+    # Apply status filter
+    for pod in pods.items:
+
+        if status and pod.status.phase.lower() != status.lower():
+            continue
+
+        pod_list.append({
+            "name": pod.metadata.name,
+            "namespace": pod.metadata.namespace,
+            "status": pod.status.phase,
+            "node": pod.spec.node_name,
+            "pod_ip": pod.status.pod_ip,
+        })
+
+    # Sorting
+    if sort_by == "name":
+        pod_list.sort(key=lambda pod: pod["name"])
+
+    elif sort_by == "namespace":
+        pod_list.sort(key=lambda pod: pod["namespace"])
+
+    elif sort_by == "status":
+        pod_list.sort(key=lambda pod: pod["status"])
+
+    # Pagination
+    start = (page - 1) * limit
+    end = start + limit
+
+    paginated_pods = pod_list[start:end]
+
+    return {
+        "page": page,
+        "limit": limit,
+        "total": len(pod_list),
+        "sorted_by": sort_by,
+        "pods": paginated_pods,
+    }
